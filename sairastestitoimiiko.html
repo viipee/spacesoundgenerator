@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ORBITAL OS // ADVANCED SYNTH ENGINE</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
+    <script src="https://unpkg.com/globe.gl"></script>
+    <style>
+        :root {
+            --neon-cyan: #64ffda; --neon-pink: #ff64b4; --neon-gold: #ffaa00;
+            --bg-dark: #05050a; --panel-bg: rgba(10, 10, 20, 0.9);
+        }
+
+        body, html {
+            margin: 0; padding: 0; overflow: hidden;
+            background: var(--bg-dark); color: var(--neon-cyan);
+            font-family: 'Courier New', Courier, monospace;
+        }
+
+        /* Visual Layers */
+        #globe-container { position: fixed; top: 0; left: 0; z-index: 1; width: 100vw; height: 100vh; }
+        #ripple-canvas { position: fixed; top: 0; left: 0; z-index: 2; pointer-events: none; width: 100vw; height: 100vh; mix-blend-mode: screen; }
+
+        /* UI Layer */
+        #ui-wrapper {
+            position: relative; z-index: 10;
+            display: grid; grid-template-columns: 320px 1fr 320px;
+            grid-template-rows: auto 1fr auto;
+            height: 100vh; padding: 15px; box-sizing: border-box; gap: 15px;
+            pointer-events: none;
+        }
+
+        .panel {
+            background: var(--panel-bg); border: 1px solid #333;
+            padding: 12px; border-radius: 4px; pointer-events: all;
+            backdrop-filter: blur(10px); box-shadow: 0 0 20px rgba(0,0,0,0.5);
+        }
+
+        header { grid-column: 1 / 4; display: flex; justify-content: space-between; border-bottom: 1px solid var(--neon-cyan); }
+
+        /* Controls */
+        .slider-group { margin-bottom: 10px; }
+        .slider-group label { display: flex; justify-content: space-between; font-size: 0.7em; margin-bottom: 4px; color: #aaa; }
+        input[type=range] { width: 100%; accent-color: var(--neon-pink); cursor: pointer; }
+        
+        .mode-btn { background: #111; border: 1px solid #444; color: #888; font-size: 0.7em; padding: 4px 8px; cursor: pointer; }
+        .mode-btn.active { border-color: var(--neon-cyan); color: var(--neon-cyan); background: #002222; }
+
+        /* Sequencer */
+        #sequencer-panel { grid-column: 1 / 4; }
+        .step-grid { display: grid; grid-template-columns: repeat(32, 1fr); gap: 2px; margin-top: 10px; }
+        .step { height: 25px; background: #111; border: 1px solid #333; cursor: pointer; position: relative; }
+        .step.active { background: var(--neon-cyan); }
+        .step.playing { border: 1px solid #fff; z-index: 5; transform: scale(1.1); box-shadow: 0 0 10px var(--neon-cyan); }
+        .step.mod-trigger { background: var(--neon-pink); } /* Used for filter mod steps */
+
+        #init-overlay {
+            position: fixed; inset: 0; background: var(--bg-dark); z-index: 1000;
+            display: flex; flex-direction: column; justify-content: center; align-items: center;
+        }
+        button#btn-start {
+            background: transparent; border: 2px solid var(--neon-cyan); color: var(--neon-cyan);
+            padding: 20px 40px; cursor: pointer; font-family: inherit; font-weight: bold; font-size: 1.2em;
+        }
+        .hidden { display: none !important; }
+    </style>
+</head>
+<body>
+
+<div id="init-overlay">
+    <h1 style="color: var(--neon-pink); letter-spacing: 12px; text-shadow: 0 0 20px var(--neon-pink);">ORBITAL ENGINE V2</h1>
+    <p style="color: #666; margin-bottom: 30px;">SAWTOOTH / SQUARE / WHITE NOISE MODULAR SYSTEM</p>
+    <button id="btn-start">INITIALIZE SYSTEMS</button>
+</div>
+
+<div id="globe-container"></div>
+<canvas id="ripple-canvas"></canvas>
+
+<div id="ui-wrapper" class="hidden">
+    <header class="panel">
+        <div>CORE // TELEMETRY: <span id="val-lat" style="color:var(--neon-pink)">0.0</span> / <span id="val-lon" style="color:var(--neon-pink)">0.0</span></div>
+        <div style="display:flex; gap:10px;">
+            <button class="mode-btn active" onclick="setGlobeMode('night', this)">NIGHT</button>
+            <button class="mode-btn" onclick="setGlobeMode('day', this)">DAY</button>
+            <button class="mode-btn" onclick="setGlobeMode('dawn', this)">DAWN</button>
+        </div>
+    </header>
+
+    <aside id="mixer" class="panel">
+        <h4 style="margin: 0 0 10px 0; font-size:0.8em;">SIGNAL MIXER</h4>
+        <div class="slider-group">
+            <label>Master Gain <span id="lbl-master">70%</span></label>
+            <input type="range" id="sl-master" min="0" max="100" value="70">
+        </div>
+        <div class="slider-group">
+            <label>White Noise <span id="lbl-noise">40%</span></label>
+            <input type="range" id="sl-noise" min="0" max="100" value="40">
+        </div>
+        <div class="slider-group">
+            <label>Square Seq <span id="lbl-seq">60%</span></label>
+            <input type="range" id="sl-seq" min="0" max="100" value="60">
+        </div>
+        <div class="slider-group">
+            <label>Saw Drone <span id="lbl-drone">40%</span></label>
+            <input type="range" id="sl-drone" min="0" max="100" value="40">
+        </div>
+
+        <h4 style="margin: 15px 0 10px 0; font-size:0.8em; color: var(--neon-gold);">FILTER SECTION</h4>
+        <div class="slider-group">
+            <label>Cutoff Freq <span id="lbl-cutoff">2000Hz</span></label>
+            <input type="range" id="sl-cutoff" min="50" max="10000" value="2000">
+        </div>
+        <div class="slider-group">
+            <label>Resonance (Q) <span id="lbl-res">5</span></label>
+            <input type="range" id="sl-res" min="0" max="25" value="5">
+        </div>
+    </aside>
+
+    <main></main>
+
+    <aside id="modulation" class="panel">
+        <h4 style="margin: 0 0 10px 0; font-size:0.8em;">MODULATION OPTIONS</h4>
+        <div style="font-size: 0.7em; color: #888; margin-bottom: 10px;">
+            <input type="checkbox" id="chk-seq-mod"> Seq Controls Filter Cutoff
+        </div>
+        <div id="log" style="font-size: 0.6em; height: 120px; overflow: hidden; background: #000; padding: 5px; border: 1px solid #333; color: #0f0;">
+            Awaiting input...
+        </div>
+        <div style="margin-top:20px; font-size: 0.65em; color: #666;">
+            MOUSE X: Cutoff Mod<br>
+            MOUSE Y: Resonance Mod<br>
+            A-K: Manual PolySynth<br>
+            SPACE: Start/Stop
+        </div>
+    </aside>
+
+    <footer id="sequencer-panel" class="panel">
+        <div style="display:flex; justify-content:space-between; align-items:center; font-size:0.7em; margin-bottom:5px;">
+            <span>32-STEP IMPULSE TRACKER (SQUARE WAVE)</span>
+            <span id="step-info" style="color:var(--neon-pink)">STEP: 1 / 32</span>
+        </div>
+        <div class="step-grid" id="step-container"></div>
+    </footer>
+</div>
+
+<script>
+    // --- 1. GLOBE & MODES ---
+    const world = Globe()(document.getElementById('globe-container'))
+        .globeImageUrl('https://unpkg.com/three-globe/example/img/earth-night.jpg')
+        .backgroundImageUrl('https://unpkg.com/three-globe/example/img/night-sky.png')
+        .atmosphereColor('#64ffda').atmosphereAltitude(0.15);
+    
+    world.controls().autoRotate = true;
+    world.controls().autoRotateSpeed = 0.4;
+
+    function setGlobeMode(mode, btn) {
+        const imgs = {
+            night: 'https://unpkg.com/three-globe/example/img/earth-night.jpg',
+            day: 'https://unpkg.com/three-globe/example/img/earth-blue-marble.jpg',
+            dawn: 'https://unpkg.com/three-globe/example/img/earth-topology.png'
+        };
+        world.globeImageUrl(imgs[mode]);
+        document.querySelectorAll('.mode-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+    }
+
+    // --- 2. AUDIO ARCHITECTURE (Saw/Square/Noise) ---
+    const masterBus = new Tone.Volume(0).toDestination();
+    const mainFilter = new Tone.Filter(2000, "lowpass", -24).connect(masterBus);
+    
+    // Noise Generator (White Noise Sweeps)
+    const noiseSource = new Tone.Noise("white").start();
+    const noiseEnv = new Tone.AmplitudeEnvelope({ attack: 0.1, decay: 0.8, sustain: 0, release: 0.5 });
+    const noiseVol = new Tone.Volume(-10).connect(mainFilter);
+    noiseSource.connect(noiseEnv);
+    noiseEnv.connect(noiseVol);
+
+    // Sequencer Synth (Square)
+    const seqSynth = new Tone.PolySynth(Tone.Synth, {
+        oscillator: { type: "square" },
+        envelope: { attack: 0.005, decay: 0.1, sustain: 0 }
+    });
+    const seqVol = new Tone.Volume(-10).connect(mainFilter);
+    seqSynth.connect(seqVol);
+
+    // Drone Synth (Sawtooth)
+    const droneOsc = new Tone.FatOscillator(55, "sawtooth", 10).start();
+    const droneVol = new Tone.Volume(-20).connect(mainFilter);
+    droneOsc.connect(droneVol);
+
+    // Manual PolySynth (Triangle/Saw mix)
+    const polySynth = new Tone.PolySynth(Tone.Synth).connect(mainFilter);
+
+    // --- 3. RIPPLE CANVAS VISUALIZER ---
+    const canvas = document.getElementById('ripple-canvas');
+    const ctx = canvas.getContext('2d');
+    let ripples = [];
+
+    function resize() { canvas.width = window.innerWidth; canvas.height = window.innerHeight; }
+    window.onresize = resize; resize();
+
+    function addRipple(color = '64, 255, 218') {
+        ripples.push({
+            x: Math.random() * canvas.width,
+            y: Math.random() * canvas.height,
+            r: 0,
+            a: 1.0,
+            color: color
+        });
+    }
+
+    function drawRipples() {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ripples.forEach((r, i) => {
+            r.r += 4;
+            r.a -= 0.015;
+            if (r.a <= 0) ripples.splice(i, 1);
+            ctx.beginPath();
+            ctx.strokeStyle = `rgba(${r.color}, ${r.a})`;
+            ctx.lineWidth = 2;
+            ctx.arc(r.x, r.y, r.r, 0, Math.PI * 2);
+            ctx.stroke();
+        });
+        requestAnimationFrame(drawRipples);
+    }
+    drawRipples();
+
+    // --- 4. STEP SEQUENCER & MODULATION ---
+    const stepStates = new Array(32).fill(false);
+    [0, 4, 8, 12, 16, 20, 24, 28].forEach(i => stepStates[i] = true);
+
+    const stepContainer = document.getElementById('step-container');
+    for(let i=0; i<32; i++) {
+        const div = document.createElement('div');
+        div.className = 'step' + (stepStates[i] ? ' active' : '');
+        div.onclick = () => { stepStates[i] = !stepStates[i]; div.classList.toggle('active'); };
+        stepContainer.appendChild(div);
+    }
+
+    let currentStep = 0;
+    Tone.Transport.scheduleRepeat((time) => {
+        const steps = document.querySelectorAll('.step');
+        steps.forEach(s => s.classList.remove('playing'));
+        steps[currentStep].classList.add('playing');
+        document.getElementById('step-info').innerText = `STEP: ${currentStep + 1} / 32`;
+
+        if (stepStates[currentStep]) {
+            // Trigger Square Synth
+            const freq = 55 * Math.pow(2, (currentStep % 12) / 12) * (currentStep < 16 ? 2 : 4);
+            seqSynth.triggerAttackRelease(freq, "32n", time);
+            
+            // Step modulation for filter
+            if (document.getElementById('chk-seq-mod').checked) {
+                const modFreq = 200 + (Math.random() * 5000);
+                mainFilter.frequency.rampTo(modFreq, "16n", time);
+            }
+
+            addRipple(currentStep % 2 === 0 ? '255, 100, 180' : '100, 255, 218');
+        }
+        currentStep = (currentStep + 1) % 32;
+    }, "16n");
+
+    // --- 5. ISS & SATELLITE API ---
+    async function fetchISS() {
+        try {
+            const res = await fetch('https://api.wheretheiss.at/v1/satellites/25544');
+            const data = await res.json();
+            document.getElementById('val-lat').innerText = data.latitude.toFixed(2);
+            document.getElementById('val-lon').innerText = data.longitude.toFixed(2);
+            
+            // Sweep noise based on position
+            const sweepDur = Tone.Math.mapLinear(data.velocity, 27500, 27800, 4, 1);
+            noiseEnv.triggerAttackRelease(sweepDur);
+            
+            const log = document.getElementById('log');
+            log.innerHTML = `> ISS POSITION UPDATE<br>> VEL: ${Math.round(data.velocity)}km/h<br>> TRG WHITE NOISE SWEEP<br>` + log.innerHTML;
+        } catch (e) { console.error("ISS Sync Error"); }
+    }
+
+    // --- 6. UI & INPUT HANDLERS ---
+    document.getElementById('btn-start').onclick = async () => {
+        await Tone.start();
+        Tone.Transport.bpm.value = 120;
+        Tone.Transport.start();
+        document.getElementById('init-overlay').classList.add('hidden');
+        document.getElementById('ui-wrapper').classList.remove('hidden');
+        setInterval(fetchISS, 8000);
+        fetchISS();
+    };
+
+    // Sliders
+    const linkSlider = (id, node, lbl, isFilter = false, param = 'volume') => {
+        document.getElementById(id).oninput = (e) => {
+            const val = e.target.value;
+            document.getElementById(lbl).innerText = isFilter ? val + (id.includes('cutoff')?'Hz':'') : val + '%';
+            if (isFilter) {
+                node[param].value = val;
+            } else {
+                node.volume.value = Tone.Math.mapLinear(val, 0, 100, -60, 5);
+            }
+        };
+    };
+
+    linkSlider('sl-master', masterBus, 'lbl-master');
+    linkSlider('sl-noise', noiseVol, 'lbl-noise');
+    linkSlider('sl-seq', seqVol, 'lbl-seq');
+    linkSlider('sl-drone', droneVol, 'lbl-drone');
+    linkSlider('sl-cutoff', mainFilter, 'lbl-cutoff', true, 'frequency');
+    linkSlider('sl-res', mainFilter, 'lbl-res', true, 'Q');
+
+    // Mouse Movement Controls
+    window.onmousemove = (e) => {
+        if (Tone.Transport.state !== 'started') return;
+        const xPct = e.clientX / window.innerWidth;
+        const yPct = e.clientY / window.innerHeight;
+        
+        // Map Mouse to Filter Offset
+        if (!document.getElementById('chk-seq-mod').checked) {
+            mainFilter.frequency.value = 50 + (xPct * 8000);
+            mainFilter.Q.value = yPct * 20;
+        }
+        world.controls().autoRotateSpeed = (xPct - 0.5) * 5;
+    };
+
+    // Keyboard
+    const notes = { 'a':'C3','w':'C#3','s':'D3','e':'D#3','d':'E3','f':'F3','t':'F#3','g':'G3','y':'G#3','h':'A3','u':'A#3','j':'B3','k':'C4' };
+    window.onkeydown = (e) => {
+        if (e.repeat) return;
+        if (e.code === 'Space') { Tone.Transport.toggle(); return; }
+        const note = notes[e.key.toLowerCase()];
+        if (note) {
+            polySynth.triggerAttack(note);
+            addRipple('255, 170, 0');
+        }
+    };
+    window.onkeyup = (e) => {
+        const note = notes[e.key.toLowerCase()];
+        if (note) polySynth.triggerRelease(note);
+    };
+</script>
+</body>
+</html>
